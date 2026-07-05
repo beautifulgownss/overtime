@@ -213,6 +213,12 @@
     font-size: 12px; color: var(--dim);
   }
 
+  /* the people blur: at r3 the structure sharpens (brighter divider,
+     brighter level tag) while the names (already blanked in the ladder
+     data) leave nothing to read in their place. */
+  body.r3 .rung { border-bottom-color: var(--paper); }
+  body.r3 .rung .lvl { color: var(--paper); font-weight: 600; }
+
   @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; }
   }
@@ -448,17 +454,31 @@ const LADDER = [
   { name: '&nbsp;&nbsp;&nbsp;&nbsp;', lvl: '', fog: true },
   { name: '&nbsp;&nbsp;&nbsp;', lvl: '', fog: true },
   { name: 'Ray Bennett', lvl: 'L7', fog: false, key: 'ray' },
-  { name: 'M. Okafor', lvl: 'L6', fog: false },
-  { name: 'C. Lind', lvl: 'L6', fog: false },
-  { name: 'S. Aiyar', lvl: 'L5', fog: false },
+  { name: 'M. Okafor', lvl: 'L6', fog: false, key: 'okafor' },
+  { name: 'C. Lind', lvl: 'L6', fog: false, key: 'lind' },
+  { name: 'S. Aiyar', lvl: 'L5', fog: false, key: 'aiyar' },
   { name: 'Nora Voss', lvl: 'L4', fog: false, key: 'nora' },
   { name: 'Jess Chen', lvl: 'L4', fog: false, key: 'jess' },
   { name: 'you', lvl: 'L3', you: true },
 ];
+// the people blur as register climbs: r1 full names, r2 first-initial +
+// last name (the format the background rungs already used from the
+// start), r3 no name at all — just the dot and the level survive.
+// idempotent on names already in "X. Last" form.
+function ladderDisplayName(name) {
+  const r = register();
+  if (r <= 1) return name;
+  const parts = name.split(' ');
+  if (parts.length < 2) return name;
+  if (r === 2) return parts[0][0] + '. ' + parts.slice(1).join(' ');
+  return '';
+}
 function renderLadder() {
   const wrap = document.getElementById('rungs');
   wrap.innerHTML = '';
-  LADDER.forEach((r, i) => {
+  // gone: the row is dropped entirely, not fogged or dimmed. no placeholder
+  // takes its place — the ladder is just shorter than it was.
+  LADDER.filter(r => !(r.key && S.flags['gone_' + r.key])).forEach((r, i) => {
     // senior: the fog directly above Ray lifts one rung, and "you" moves up.
     // derived live off the flag so resume never needs its own persisted copy.
     // the top of the ladder must stay unreadable: at least two fogged rungs
@@ -466,6 +486,8 @@ function renderLadder() {
     let name = r.name, lvl = r.lvl, fog = r.fog;
     if (i === 2 && S.flags.senior) { name = 'R. Castellan'; lvl = 'SVP'; fog = false; }
     if (r.you && S.flags.senior) lvl = 'L4';
+    if (r.you && S.flags.staff) lvl = 'L5';
+    if (!fog && !r.you) name = ladderDisplayName(name);
     const div = document.createElement('div');
     div.className = 'rung' + (fog ? ' fog' : '') + (r.you ? ' you' : '')
       + (r.key && S.flags['dim_' + r.key] ? ' dimmed' : '');
@@ -479,6 +501,11 @@ function renderLadder() {
    All narrative lives below this line. Register variants use {1:,2:,3:}.
    ================================================================ */
 
+// canonical wording of the desk note (Act I). the endgame interview quotes
+// this verbatim as a callback — keep this the single source of truth so
+// the two never drift apart.
+const DESK_NOTE = 'don’t.';
+
 // ----- actions -----
 const ACT_FIND_DESK = {
   id: 'findDesk', label: 'find your desk',
@@ -488,8 +515,9 @@ const ACT_FIND_DESK = {
     S.flags.hudVisible = true;
     seq([
       [400,  () => line('rows of desks under fluorescent hum. one has your name on a sticky note. spelled right, first try. that\u2019s new.')],
+      [1800, () => line('the drawer still has someone else\u2019s things: a dead phone charger, an expired parking pass, a sticky note that just says \u201c' + DESK_NOTE + '\u201d you toss it with the rest.')],
       [2200, () => line('the laptop is already provisioned. the wallpaper is a mountain nobody here has climbed.')],
-      [2400, () => { addAction(ACT_WORK); line('<em>there is work in the queue.</em>'); }],
+      [2200, () => { addAction(ACT_WORK); line('<em>there is work in the queue.</em>'); }],
     ]);
   }
 };
@@ -714,7 +742,7 @@ function buildFork3() {
           S.energy = Math.min(S.energy, S.energyMax);
           S.flags.tigerTeam = true;
           const fork1Dirty = S.forkHistory.some(f => f.id === 'fork1' && f.choice === 'quiet');
-          if (fork1Dirty) S.flags.dim_jess = true;
+          if (fork1Dirty) { S.flags.dim_jess = true; S.flags.jessTransferred = true; }
           seq([
             [500,  () => scene('you take it. the tiger team gets its last body.')],
             [2200, () => line({ 1: 'the hours are what everyone said they\u2019d be. you\u2019re at your desk past nine most nights.',
@@ -771,8 +799,86 @@ function act3Teaser() {
     [0,    () => scene('the reorg rumors start before the org chart does.')],
     [2600, () => line('a planning deck starts using the phrase \u201cspans of control.\u201d it\u2019s in every staff meeting by Friday.')],
     [2600, () => line('headcount math stops rounding up. from here, every conversation is about who still counts as necessary.')],
-    [3000, () => line('<em>end of the current build. act III begins with the reorg. your progress is saved.</em>')],
   ]);
+}
+
+// zero-sum promotion: rising a rung costs someone else theirs. Jess is the
+// default casualty (echoes fork1/fork3); if she's already dimmed from that
+// branch, the cost falls to Nora instead, so every playthrough has a fresh,
+// visible displacement. no fork, no dialogue about it — the ladder just
+// changes, and the player finds out by looking.
+// the layoff. no announcement, no exec, no reason given anywhere in the
+// game's text — the player is only ever shown the absence. jess is the
+// casualty the player has watched earn real impact, unless she already
+// left via the Act II transfer branch, in which case the background trio
+// alone is enough to make the point.
+function layoff() {
+  ['okafor', 'lind', 'aiyar'].forEach(k => S.flags['gone_' + k] = true);
+  if (!S.flags.jessTransferred) S.flags.gone_jess = true;
+  renderLadder();
+  save();
+  seq([
+    [0,    () => scene({ 1: 'a tuesday, unremarkable, until you count desks.',
+                          2: 'a tuesday. you count desks without meaning to.',
+                          3: 'tuesday.' })],
+    [2400, () => line(S.flags.jessTransferred
+      ? { 1: 'a few desks by the window are empty. their badge photos are still in the directory.',
+          2: 'a few desks by the window are empty. the directory hasn’t caught up yet.',
+          3: 'three desks empty by the window. the directory hasn’t caught up yet.' }
+      : { 1: 'Jess’s desk is empty. her badge photo is still in the directory.',
+          2: 'Jess’s desk is empty. the directory hasn’t caught up yet.',
+          3: 'three desks empty by the window. the directory hasn’t caught up yet.' })],
+    [2400, () => line({ 1: 'no note in the channel. no meeting on the calendar. you ask someone; they don’t know either.',
+                        2: 'no note in the channel. no meeting on the calendar. nobody seems to know, or says so.',
+                        3: 'no note in the channel. no meeting on the calendar.' })],
+    [2600, () => line('<em>the queue is still there monday. it always is.</em>')],
+  ]);
+}
+
+// how many of the 3 forks the player resolved clean. derived from
+// forkHistory (existing since Act I) cross-referenced against each fork's
+// already-authored option.clean — no new counter stored on S.
+function cleanForkCount() {
+  return S.forkHistory.filter(f => {
+    const build = FORKS[f.id];
+    if (!build) return false;
+    const opt = build().options.find(o => o.id === f.choice);
+    return !!(opt && opt.clean);
+  }).length;
+}
+
+// Nora's exit-or-stay. decided on accumulated history, not a fork of her
+// own. 2+ of 3 forks clean and she stays, quiet, one small line; otherwise
+// she leaves the way real people leave — no speech, no goodbye scene, the
+// ladder row just goes quiet like the others. fires a beat after the
+// layoff so it reads as its own, separate thing.
+function noraResolves() {
+  const stays = cleanForkCount() >= 2;
+  S.flags.noraResolved = true;
+  S.flags.noraStayed = stays;
+  if (!stays) S.flags.gone_nora = true;
+  renderLadder();
+  save();
+  line(stays
+    ? { 1: 'Nora is still at the desk beside yours, ranking conference rooms for no reason anyone asked.',
+        2: 'Nora is still at the desk beside yours.',
+        3: 'Nora Voss. still there.' }
+    : { 1: 'Nora’s desk is empty one morning. no one mentions it.',
+        2: 'Nora’s desk is empty one morning.',
+        3: 'Nora Voss: gone.' });
+}
+
+function pillarClimb() {
+  S.flags.staff = true;
+  const target = S.flags.dim_jess ? 'nora' : 'jess';
+  S.flags['dim_' + target] = true;
+  renderLadder();
+  save();
+  line({
+    1: 'your name moves up a line on the ladder. nobody sends a note about it.',
+    2: 'your name moves up a line on the ladder.',
+    3: 'ladder updated.',
+  });
 }
 
 // registry so any fork can be rebuilt and re-opened by id alone (resume,
@@ -808,6 +914,12 @@ const TRIGGERS = [
     fire: () => setTimeout(promotionScene, 1800) },
   { id: 'trg_act3Teaser', when: () => S.flags.senior && S.flags.act3TeaserAt && Date.now() >= S.flags.act3TeaserAt,
     fire: act3Teaser },
+  { id: 'trg_pillarClimb', when: () => S.act === 3 && S.impact >= 180,
+    fire: () => setTimeout(pillarClimb, 1500) },
+  { id: 'trg_layoff', when: () => S.flags.staff && S.impact >= 220,
+    fire: () => setTimeout(layoff, 1500) },
+  { id: 'trg_noraResolves', when: () => S.flags.trg_layoff && S.impact >= 260,
+    fire: () => setTimeout(noraResolves, 1500) },
 ];
 
 /* ================================================================
