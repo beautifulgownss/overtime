@@ -263,6 +263,7 @@ const DEFAULT_STATE = {
   flags: {},           // narrative flags: seenX, fork1, etc.
   forkHistory: [],     // [{id, choice, t}]
   act: 0,              // 0 = cold open, 1 = act one, ...
+  pendingFork: null,   // id of an open, unresolved fork; re-opened on resume
 };
 let S = load() || JSON.parse(JSON.stringify(DEFAULT_STATE));
 
@@ -388,8 +389,17 @@ function cooldown(btn, ms) {
 }
 
 // ---------- forks ----------
+// Forks are registered by id in FORKS (see CONTENT) so an unresolved fork
+// can be rebuilt and re-opened on resume, not just referenced as a loose
+// constant at the point it first triggers.
 const forkEl = document.getElementById('fork');
+function openForkById(id) {
+  const build = FORKS[id];
+  if (build) openFork(build());
+}
 function openFork(fork) {
+  S.pendingFork = fork.id;
+  save();
   document.getElementById('fork-title').textContent = fork.title;
   document.getElementById('fork-body').innerHTML = fork.body.map(p => '<p>' + v(p) + '</p>').join('');
   const opts = document.getElementById('fork-opts');
@@ -401,6 +411,7 @@ function openFork(fork) {
     b.onclick = () => {
       forkEl.classList.remove('open');
       S.forkHistory.push({ id: fork.id, choice: opt.id, t: Date.now() });
+      S.pendingFork = null;
       if (!opt.clean) S.dirty++;
       applyRegister();
       opt.effect();
@@ -434,6 +445,7 @@ function tick() {
    ================================================================ */
 const LADDER = [
   { name: '&nbsp;', lvl: '', fog: true },
+  { name: '&nbsp;&nbsp;&nbsp;&nbsp;', lvl: '', fog: true },
   { name: '&nbsp;&nbsp;&nbsp;', lvl: '', fog: true },
   { name: 'Ray Bennett', lvl: 'L7', fog: false, key: 'ray' },
   { name: 'M. Okafor', lvl: 'L6', fog: false },
@@ -446,11 +458,18 @@ const LADDER = [
 function renderLadder() {
   const wrap = document.getElementById('rungs');
   wrap.innerHTML = '';
-  LADDER.forEach(r => {
+  LADDER.forEach((r, i) => {
+    // senior: the fog directly above Ray lifts one rung, and "you" moves up.
+    // derived live off the flag so resume never needs its own persisted copy.
+    // the top of the ladder must stay unreadable: at least two fogged rungs
+    // remain above Castellan even after the lift.
+    let name = r.name, lvl = r.lvl, fog = r.fog;
+    if (i === 2 && S.flags.senior) { name = 'R. Castellan'; lvl = 'SVP'; fog = false; }
+    if (r.you && S.flags.senior) lvl = 'L4';
     const div = document.createElement('div');
-    div.className = 'rung' + (r.fog ? ' fog' : '') + (r.you ? ' you' : '')
+    div.className = 'rung' + (fog ? ' fog' : '') + (r.you ? ' you' : '')
       + (r.key && S.flags['dim_' + r.key] ? ' dimmed' : '');
-    div.innerHTML = '<span class="dot"></span><span class="name">' + r.name + '</span><span class="lvl">' + r.lvl + '</span>';
+    div.innerHTML = '<span class="dot"></span><span class="name">' + name + '</span><span class="lvl">' + lvl + '</span>';
     wrap.appendChild(div);
   });
 }
@@ -556,12 +575,55 @@ const FORK_1 = {
   ]
 };
 
-const FORK_2_TEASER = () => {
-  seq([
-    [0,    () => scene('friday, 2:14 a.m. the payments service goes down for four hours.')],
-    [2800, () => line('by monday there has to be a postmortem. writing down what happened is not the same as deciding what happened. except here, it is.')],
-    [3000, () => line('<em>end of the current build. act II begins with the postmortem. your choices are saved.</em>')],
-  ]);
+const FORK_2 = {
+  id: 'fork2',
+  title: 'the postmortem',
+  body: [
+    'friday, 2:14 a.m. the payments service goes down for four hours. nobody is hurt. money doesn\u2019t move for four hours, then it does, and by monday it is a paragraph instead of a memory.',
+    { 1: 'the root cause is shared: a retry change your team shipped, and a config drift on the offshore team\u2019s side. either one alone would have held.',
+      2: 'the root cause is shared, technically. a retry change on your side, a config drift on theirs. either alone would have held.' },
+    'the doc has one line for root cause. whatever it says becomes what happened.',
+  ],
+  options: [
+    {
+      id: 'straight', clean: true,
+      label: 'write it straight',
+      sub: 'both causes, in order. the team owns it together.',
+      effect() {
+        S.flags.postmortemHonest = true;
+        S.flags.promoDelayed = true;
+        S.impact = Math.max(0, S.impact - 8);
+        S.act = 2;
+        seq([
+          [500,  () => scene('you write both causes, in the order they happened.')],
+          [2000, () => line({ 1: 'your manager reads it twice. \u201cthis is going to slow the promo conversation down,\u201d he says. not angry. just accurate.',
+                              2: 'your manager reads it twice. \u201cthis will cost you some time on promo,\u201d he says. he does not sound surprised.' })],
+          [2600, () => line({ 1: 'the offshore lead sends a one-line thank you. it is the whole message.',
+                              2: 'the offshore lead sends a one-line thank you. you almost don\u2019t open it.' })],
+          [3000, () => line('<em>the queue is still there monday. it always is.</em>')],
+        ]);
+      }
+    },
+    {
+      id: 'technical', clean: false,
+      label: 'write it "technically accurate"',
+      sub: 'root cause: vendor-side config drift. leave it there.',
+      effect() {
+        S.impact += 12;
+        S.flags.scapegoat = true;
+        S.flags.scapegoatEchoAt = S.workClicks + 3;
+        S.act = 2;
+        seq([
+          [500,  () => scene('you write it the way that reads cleanest: root cause, config drift, offshore.')],
+          [2000, () => line({ 1: 'it is not false. it is just the smaller half of the truth, alone on the page.',
+                              2: 'it is not false. it is just the half of the truth that costs you nothing.' })],
+          [2600, () => line({ 1: 'your manager forwards it up without a comment. that in itself is a kind of comment.',
+                              2: 'your manager forwards it up without a comment.' })],
+          [3000, () => line('<em>the queue is still there monday. it always is.</em>')],
+        ]);
+      }
+    },
+  ]
 };
 
 // ----- character beats -----
@@ -585,20 +647,167 @@ function perfCycle() {
       ? '\u201ci told them what you said in the roadmap review,\u201d Ray says after. \u201cthe correction. that cost you a little this cycle. for what it\u2019s worth, i count it.\u201d'
       : '\u201cstrong year,\u201d Ray says after. \u201cthe VP mentioned the caching proposal. you\u2019ve got momentum. spend it on purpose.\u201d')],
     [3600, () => line('<em>a new tab has appeared: the ladder.</em>')],
-    [200,  () => { S.flags.ladderUnlocked = true; renderHud(); }],
+    [200,  () => { S.flags.ladderUnlocked = true; renderHud(); save(); }],
   ]);
 }
+
+// register-3 rereads of confidences Ray has given the player. Never rendered
+// by any trigger today; Act IV pulls these directly to enumerate what she
+// knows, keyed by S.flags.rayConfidenceNDetail.
+const RAY_CONFIDENCES = {
+  metrics: {
+    3: 'ray bennett, self-reported: two quarters of misattributed growth data, corrected without restatement. known only to you.',
+  },
+};
+
+function rayConfidence1() {
+  S.flags.rayConfidence1 = true;
+  S.flags.rayConfidence1Detail = 'metrics';
+  save();
+  seq([
+    [0,    () => scene('the floor thins out by seven. Ray is still at his desk, coat on, in no hurry.')],
+    [2600, () => line('\u201cyou know the growth curve in the marketing deck? same one for four years.\u201d he says it like he\u2019s mentioning the weather. \u201cfor two quarters it was wrong. attribution bug, double-counting a channel.\u201d')],
+    [3400, () => line('\u201ci found it. fixed it going forward. never restated the old numbers.\u201d a pause. \u201cnobody got hurt. a couple people made L6 off that curve.\u201d')],
+    [3000, () => line('he doesn\u2019t say why he\u2019s telling you this. he just tells you.')],
+  ]);
+}
+
+function noraDeclines() {
+  S.flags.noraDeclined = true;
+  S.flags.fork3At = S.workClicks + 3;
+  save();
+  line({
+    1: 'a tiger team is forming out of the outage fallout: incident response, cross-team, weeks of long hours. Nora was asked first. she passed.',
+    2: 'a tiger team is forming out of the outage fallout: incident response, cross-team, weeks of long hours. Nora was asked first. she passed, which people will remember at calibration.',
+    3: 'a tiger team is forming out of the outage. Nora was asked first and passed. noted.',
+  });
+}
+
+// Nora's exit, after fork3 resolves. her line never changes with the
+// register; only the frame around it does. branch: 'solo' | 'shared'.
+function noraBeat2(branch) {
+  line(branch === 'solo'
+    ? 'evening. you\u2019re still at your desk. the hours turned out to be real.'
+    : 'evening. the team is fully staffed now and still at it. you\u2019re one of six, not the only one.');
+  line('Nora zips her bag. \u201cdinner\u2019s at seven. i\u2019m cooking,\u201d she says.');
+  if (register() === 1) line('<em>she\u2019s left by six most nights this month.</em>');
+}
+
+function buildFork3() {
+  return {
+    id: 'fork3',
+    title: 'the tiger team',
+    body: [
+      'the tiger team needs one more. the spot Nora passed on comes to you.',
+      { 1: 'the ask is flattering and a little heavy at once: nights, a pager, a seat in rooms you haven\u2019t been in yet.',
+        2: 'the ask is heavy: nights, a pager, a seat in rooms you haven\u2019t been in yet. flattering too, if you let it be.' },
+      'someone has to be the name on the slide when this is over.',
+    ],
+    options: [
+      {
+        id: 'solo', clean: false,
+        label: 'take the spot',
+        sub: 'the hours are real. so is the slide.',
+        effect() {
+          S.impact += 20;
+          S.energyMax = Math.max(4, S.energyMax - 2);
+          S.energy = Math.min(S.energy, S.energyMax);
+          S.flags.tigerTeam = true;
+          const fork1Dirty = S.forkHistory.some(f => f.id === 'fork1' && f.choice === 'quiet');
+          if (fork1Dirty) S.flags.dim_jess = true;
+          seq([
+            [500,  () => scene('you take it. the tiger team gets its last body.')],
+            [2200, () => line({ 1: 'the hours are what everyone said they\u2019d be. you\u2019re at your desk past nine most nights.',
+                                2: 'the hours are what everyone said they\u2019d be. you\u2019re at your desk past nine most nights. it stops registering by wednesday.' })],
+            [2200, () => { if (fork1Dirty) line('Jess transfers to a different team. the paperwork lists no reason.'); }],
+            [2400, () => noraBeat2('solo')],
+          ]);
+        }
+      },
+      {
+        id: 'shared', clean: true,
+        label: 'push to staff it as a team',
+        sub: S.flags.promoDelayed
+          ? 'no solo credit, same as last time. you know what that costs now.'
+          : 'no solo credit. the team takes the spot together.',
+        effect() {
+          S.impact += 8;
+          S.flags.sharedTeam = true;
+          seq([
+            [500,  () => scene('you push back: staff it properly, or it eats someone alive.')],
+            [2200, () => line('the team gets two more headcount by the end of the week. the hours are still bad. they\u2019re just not only yours.')],
+            [2400, () => noraBeat2('shared')],
+          ]);
+        }
+      },
+    ],
+  };
+}
+
+// ----- Act II close -----
+function promotionScene() {
+  S.flags.senior = true;
+  S.flags.act3TeaserAt = Date.now() + 60000;
+  save();
+  renderLadder();
+  seq([
+    [500,  () => scene('the promotion goes through at the next cycle.')],
+    [2400, () => line(S.flags.promoDelayed
+      ? { 1: 'a cycle late. that\u2019s what the postmortem cost, exactly, and you knew it going in.',
+          2: 'a cycle late. that\u2019s what the postmortem cost, exactly.' }
+      : { 1: 'on time, no friction. the calibration room didn\u2019t need a second meeting.',
+          2: 'on time. no friction, no second meeting, no questions.',
+          3: 'on time. clean.' })],
+    [2600, () => line({ 1: '\u201csenior,\u201d Ray says, like the word still means something to him. \u201cyou earned this one. i\u2019m glad it landed.\u201d',
+                        2: '\u201csenior,\u201d Ray says. \u201cyou earned this one.\u201d he means it, mostly.',
+                        3: 'Ray sends a two-word message. \u201csenior. congrats.\u201d' })],
+  ]);
+}
+
+function act3Teaser() {
+  S.act = 3;
+  save();
+  seq([
+    [0,    () => scene('the reorg rumors start before the org chart does.')],
+    [2600, () => line('a planning deck starts using the phrase \u201cspans of control.\u201d it\u2019s in every staff meeting by Friday.')],
+    [2600, () => line('headcount math stops rounding up. from here, every conversation is about who still counts as necessary.')],
+    [3000, () => line('<em>end of the current build. act III begins with the reorg. your progress is saved.</em>')],
+  ]);
+}
+
+// registry so any fork can be rebuilt and re-opened by id alone (resume,
+// pendingFork). fork1/fork2 are static content; fork3 is rebuilt fresh
+// each time since its sub-label depends on live flags.
+const FORKS = {
+  fork1: () => FORK_1,
+  fork2: () => FORK_2,
+  fork3: buildFork3,
+};
 
 // ----- triggers (thresholds) -----
 const TRIGGERS = [
   { id: 'trg_nora',    when: () => S.workClicks >= 4,  fire: meetNora },
   { id: 'trg_ray',     when: () => S.workClicks >= 9,  fire: meetRay },
   { id: 'trg_outside', when: () => S.workClicks >= 11, fire: () => addAction(ACT_STEP_OUTSIDE) },
-  { id: 'trg_fork1',   when: () => S.impact >= 20,     fire: () => setTimeout(() => openFork(FORK_1), 1200) },
+  { id: 'trg_fork1',   when: () => S.impact >= 20,     fire: () => setTimeout(() => openForkById('fork1'), 1200) },
   { id: 'trg_perf',    when: () => S.impact >= 42 && S.forkHistory.some(f => f.id === 'fork1'),
     fire: () => setTimeout(perfCycle, 1500) },
   { id: 'trg_act2',    when: () => S.flags.ladderUnlocked && S.impact >= 60,
-    fire: () => setTimeout(FORK_2_TEASER, 1500) },
+    fire: () => setTimeout(() => openForkById('fork2'), 1200) },
+  { id: 'trg_scapegoatEcho', when: () => S.flags.scapegoat && S.workClicks >= S.flags.scapegoatEchoAt,
+    fire: () => line({ 1: 'the offshore lead pings you: no hard feelings, mistakes happen. you say the same back and mean it.',
+                        2: 'the offshore lead pings you: no hard feelings, mistakes happen. you say the same back and don\u2019t.',
+                        3: 'the offshore channel has gone quiet. someone else is closing those tickets now.' }) },
+  { id: 'trg_rayConfidence1', when: () => S.impact >= 85 && S.forkHistory.some(f => f.id === 'fork2'),
+    fire: () => setTimeout(rayConfidence1, 1800) },
+  { id: 'trg_noraDeclines', when: () => S.flags.rayConfidence1 && S.impact >= 95,
+    fire: () => setTimeout(noraDeclines, 1200) },
+  { id: 'trg_fork3', when: () => S.flags.noraDeclined && S.workClicks >= S.flags.fork3At,
+    fire: () => setTimeout(() => openForkById('fork3'), 1200) },
+  { id: 'trg_promotion', when: () => S.impact >= 150 && S.forkHistory.some(f => f.id === 'fork3'),
+    fire: () => setTimeout(promotionScene, 1800) },
+  { id: 'trg_act3Teaser', when: () => S.flags.senior && S.flags.act3TeaserAt && Date.now() >= S.flags.act3TeaserAt,
+    fire: act3Teaser },
 ];
 
 /* ================================================================
@@ -606,6 +815,10 @@ const TRIGGERS = [
    ================================================================ */
 applyRegister();
 renderHud();
+
+// an unresolved fork outlives a reload: rebuild and re-open it before
+// anything else so it can never be silently skipped.
+if (S.pendingFork) openForkById(S.pendingFork);
 
 if (S.act === 0 && S.workClicks === 0) {
   // cold open
