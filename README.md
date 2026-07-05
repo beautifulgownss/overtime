@@ -38,12 +38,16 @@ https://beautifulgownss.github.io/overtime/
 
 ## Status
 
-In development — Acts I and II of a planned five-act structure are playable:
+In development — Acts I through III of a planned five-act structure are
+playable:
 
 - **Act I, "The Offer":** cold open, core work loop, first characters, the
   roadmap review (Fork 1), the performance cycle, the ladder unlock.
 - **Act II, "The Climb":** the postmortem (Fork 2), a confidence from Ray,
   the tiger team (Fork 3), the senior promotion, and the Act III teaser.
+- **Act III, "The Pillar":** the zero-sum promotion, the layoff, Nora's
+  resolution, and the register/ladder inversion. Act III currently ends
+  here — the closing beat and the Act IV transition aren't written yet.
 
 ## How it works
 
