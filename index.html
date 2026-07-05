@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>meridian</title>
+<!--
+  OVERTIME — engine + Act I vertical slice
+  Single-file, no dependencies, no network calls.
+
+  ARCHITECTURE
+  ------------
+  1. STATE       — one serializable object (S). Save/load degrades gracefully
+                   to in-memory if storage is unavailable.
+  2. REGISTERS   — moral temperature. S.dirty counts immoral fork choices.
+                   register() maps dirty -> 1 (warm), 2 (slipping), 3 (cold).
+                   Log lines are authored in up to 3 register variants.
+                   The CSS custom properties on <body> shift with register:
+                   the page literally cools. No stat is ever shown.
+  3. LOG         — prepend-rendered narrative feed. line({1:"warm",3:"cold"})
+                   picks the highest authored variant <= current register.
+  4. ACTIONS     — cooldown buttons (A Dark Room style).
+  5. FORKS       — modal decision points. Effects mutate state + set flags.
+  6. SCHEDULER   — threshold triggers checked after every state change.
+  7. LADDER      — the pillar screen. Dots are people. Unlocked at Act I end.
+  8. COCOON      — the hidden track. "step outside" counts silently.
+
+  CONTENT/ENGINE SEPARATION: everything narrative lives in CONTENT down
+  in one block (LINES, ACTIONS, FORKS, TRIGGERS) so the register corpus
+  can grow without touching engine code.
+-->
+<style>
+  :root { color-scheme: dark; }
+
+  /* Register temperature: these three variable sets are the game's
+     conscience. Body class r1/r2/r3 selects them. Transitions are slow
+     on purpose — the room cools too gradually to catch it happening.
+     The register-1 color is hers; the game drains it. */
+  body.r1 {
+    --bg: #171019;          /* dark plum, a lamp somewhere */
+    --paper: #f7eef4;       /* brighter pink-white reading text */
+    --dim: #bfa7b8;
+    --accent: #e07cb0;      /* dark pink, lifted for contrast */
+    --edge: #3c2a3a;
+    --glow: rgba(209,106,159,0.06);
+  }
+  body.r2 {
+    --bg: #131019;
+    --paper: #ebe5eb;
+    --dim: #a49aa8;
+    --accent: #c093bd;      /* fading mauve */
+    --edge: #2c2532;
+    --glow: rgba(169,124,166,0.03);
+  }
+  body.r3 {
+    --bg: #0d1014;          /* clinical cold */
+    --paper: #dde5ed;
+    --dim: #8b97a4;
+    --accent: #a3b8cd;      /* fluorescent */
+    --edge: #1e2630;
+    --glow: rgba(143,163,184,0.0);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--paper);
+    font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
+    font-size: 19px;
+    line-height: 1.7;
+    transition: background 6s ease, color 6s ease;
+    min-height: 100vh;
+  }
+
+  /* faint radial lamp glow, dies with the registers */
+  #lamp {
+    position: fixed; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse 70% 50% at 50% 0%, var(--glow), transparent 70%);
+    transition: background 8s ease;
+  }
+
+  #app {
+    position: relative;
+    max-width: 680px;
+    margin: 0 auto;
+    padding: 40px 24px 120px;
+  }
+
+  /* ---------- header / counters ---------- */
+  #hud {
+    display: flex; gap: 24px; align-items: baseline;
+    font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 14px; letter-spacing: 0.06em;
+    color: var(--dim);
+    border-bottom: 1px solid var(--edge);
+    padding-bottom: 10px; margin-bottom: 28px;
+    min-height: 34px;
+    opacity: 0; transition: opacity 2s ease;
+  }
+  #hud.visible { opacity: 1; }
+  .stat b { color: var(--accent); font-weight: 700; font-size: 15px; }
+  #tabs { margin-left: auto; display: flex; gap: 14px; }
+  .tab {
+    cursor: pointer; text-transform: lowercase;
+    border: none; background: none; color: var(--dim);
+    font: inherit; letter-spacing: inherit; padding: 0;
+  }
+  .tab.active { color: var(--accent); }
+  .tab:focus-visible { outline: 1px solid var(--accent); outline-offset: 3px; }
+
+  /* ---------- log ---------- */
+  #log { display: flex; flex-direction: column; gap: 14px; }
+  .entry { opacity: 0; transform: translateY(-4px); transition: opacity 1.2s ease, transform 1.2s ease; }
+  .entry.shown { opacity: 1; transform: none; }
+  .entry.old { opacity: 0.6; }
+  .entry.scene { color: var(--accent); }
+  .entry em { color: var(--dim); font-style: italic; }
+
+  /* ---------- actions ---------- */
+  #actions {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: linear-gradient(transparent, var(--bg) 30%);
+    padding: 30px 24px 26px;
+    transition: background 6s ease;
+  }
+  #actions-inner {
+    max-width: 680px; margin: 0 auto;
+    display: flex; flex-wrap: wrap; gap: 10px;
+  }
+  .act {
+    position: relative; overflow: hidden;
+    font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 14px; letter-spacing: 0.04em; text-transform: lowercase;
+    color: var(--paper);
+    background: none;
+    border: 1px solid var(--edge);
+    padding: 10px 18px;
+    cursor: pointer;
+    transition: border-color 0.3s, color 0.3s, opacity 0.6s;
+  }
+  .act:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .act:disabled { cursor: default; color: var(--dim); }
+  .act:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+  .act .cd {
+    position: absolute; left: 0; top: 0; bottom: 0;
+    background: var(--edge); opacity: 0.5; width: 0%;
+    pointer-events: none;
+  }
+  .act.subtle { border-color: transparent; color: var(--dim); }
+  .act.subtle:hover:not(:disabled) { border-color: var(--edge); color: var(--dim); }
+
+  /* ---------- fork modal ---------- */
+  #fork {
+    position: fixed; inset: 0; display: none;
+    background: rgba(0,0,0,0.72);
+    align-items: center; justify-content: center;
+    padding: 24px; z-index: 10;
+  }
+  #fork.open { display: flex; }
+  #fork-card {
+    max-width: 560px; width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--edge);
+    padding: 34px 34px 28px;
+  }
+  #fork-title {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--dim); margin-bottom: 16px;
+  }
+  #fork-body { margin-bottom: 26px; }
+  #fork-body p + p { margin-top: 12px; }
+  #fork-opts { display: flex; flex-direction: column; gap: 10px; }
+  .fork-opt {
+    text-align: left; font: inherit;
+    background: none; color: var(--paper);
+    border: 1px solid var(--edge);
+    padding: 12px 16px; cursor: pointer;
+    transition: border-color 0.3s;
+  }
+  .fork-opt:hover { border-color: var(--accent); }
+  .fork-opt .sub {
+    display: block; font-size: 13px; color: var(--dim); margin-top: 3px;
+  }
+  /* conscience atrophy: the clean option renders smaller/dimmer at r3 */
+  body.r3 .fork-opt.clean { color: var(--dim); font-size: 14.5px; border-color: transparent; }
+  body.r2 .fork-opt.clean { font-size: 15.5px; }
+
+  /* ---------- ladder screen ---------- */
+  #ladder { display: none; padding-top: 8px; }
+  #ladder.visible { display: block; }
+  #ladder h2 {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--dim); font-weight: 400; margin-bottom: 30px;
+  }
+  .rung {
+    display: flex; align-items: center; gap: 14px;
+    padding: 13px 0; border-bottom: 1px solid var(--edge);
+  }
+  .rung .dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--dim); flex: none;
+  }
+  .rung.you .dot { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  .rung.fog { filter: blur(3px); opacity: 0.5; user-select: none; }
+  .rung.dimmed { opacity: 0.35; }
+  .rung .name { font-size: 15px; }
+  .rung .lvl {
+    margin-left: auto;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px; color: var(--dim);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+  @media (max-width: 480px) {
+    body { font-size: 16px; }
+    #app { padding: 28px 18px 130px; }
+  }
+</style>
+</head>
+<body class="r1">
+<div id="lamp"></div>
+<div id="app">
+  <div id="hud">
+    <span class="stat" id="stat-impact" style="display:none">impact <b>0</b></span>
+    <span class="stat" id="stat-energy" style="display:none">energy <b>10</b></span>
+    <div id="tabs">
+      <button class="tab active" id="tab-floor" style="display:none">the floor</button>
+      <button class="tab" id="tab-ladder" style="display:none">the ladder</button>
+    </div>
+  </div>
+  <div id="log" aria-live="polite"></div>
+  <div id="ladder"><h2>meridian org ladder</h2><div id="rungs"></div></div>
+</div>
+
+<div id="actions"><div id="actions-inner"></div></div>
+
+<div id="fork" role="dialog" aria-modal="true">
+  <div id="fork-card">
+    <div id="fork-title"></div>
+    <div id="fork-body"></div>
+    <div id="fork-opts"></div>
+  </div>
+</div>
+
+<script>
+/* ================================================================
+   ENGINE
+   ================================================================ */
+
+// ---------- state ----------
+const DEFAULT_STATE = {
+  impact: 0,
+  energy: 10,
+  energyMax: 10,
+  dirty: 0,            // immoral fork count -> register
+  cocoon: 0,           // step-outside clicks (never surfaced)
+  workClicks: 0,
+  flags: {},           // narrative flags: seenX, fork1, etc.
+  forkHistory: [],     // [{id, choice, t}]
+  act: 0,              // 0 = cold open, 1 = act one, ...
+};
+let S = load() || JSON.parse(JSON.stringify(DEFAULT_STATE));
+
+function save() {
+  try { localStorage.setItem('overtime_v1', JSON.stringify(S)); } catch (e) { /* in-memory only */ }
+}
+function load() {
+  try {
+    const raw = localStorage.getItem('overtime_v1');
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) { return null; }
+}
+
+// ---------- registers ----------
+function register() {
+  if (S.dirty >= 2) return 3;
+  if (S.dirty >= 1) return 2;
+  return 1;
+}
+function applyRegister() {
+  document.body.className = 'r' + register();
+}
+
+// pick the correct authored variant for the current register.
+// variants: {1: "...", 2: "...", 3: "..."} — falls back downward.
+function v(variants) {
+  if (typeof variants === 'string') return variants;
+  const r = register();
+  return variants[r] || variants[r - 1] || variants[1];
+}
+
+// ---------- log ----------
+const logEl = document.getElementById('log');
+let entryCount = 0;
+function line(variants, cls) {
+  const text = v(variants);
+  if (!text) return;
+  const div = document.createElement('div');
+  div.className = 'entry' + (cls ? ' ' + cls : '');
+  div.innerHTML = text;
+  // prepend: newest on top, older entries fade
+  logEl.prepend(div);
+  requestAnimationFrame(() => requestAnimationFrame(() => div.classList.add('shown')));
+  entryCount++;
+  [...logEl.children].forEach((el, i) => {
+    el.classList.toggle('old', i > 5);
+  });
+  // keep the DOM sane
+  while (logEl.children.length > 60) logEl.lastChild.remove();
+}
+function scene(variants) { line(variants, 'scene'); }
+
+// queue lines with delays for scripted beats
+function seq(items) {
+  let t = 0;
+  items.forEach(([delay, fn]) => {
+    t += delay;
+    setTimeout(fn, t);
+  });
+}
+
+// ---------- HUD ----------
+const hud = document.getElementById('hud');
+function renderHud() {
+  const si = document.getElementById('stat-impact');
+  const se = document.getElementById('stat-energy');
+  si.querySelector('b').textContent = Math.floor(S.impact);
+  se.querySelector('b').textContent = Math.floor(S.energy);
+  if (S.flags.hudVisible) {
+    hud.classList.add('visible');
+    si.style.display = ''; se.style.display = '';
+    document.getElementById('tab-floor').style.display = '';
+  }
+  if (S.flags.ladderUnlocked) {
+    document.getElementById('tab-ladder').style.display = '';
+  }
+}
+
+// ---------- tabs ----------
+const ladderEl = document.getElementById('ladder');
+document.getElementById('tab-floor').onclick = () => switchTab('floor');
+document.getElementById('tab-ladder').onclick = () => switchTab('ladder');
+function switchTab(t) {
+  document.getElementById('tab-floor').classList.toggle('active', t === 'floor');
+  document.getElementById('tab-ladder').classList.toggle('active', t === 'ladder');
+  logEl.style.display = t === 'floor' ? '' : 'none';
+  ladderEl.classList.toggle('visible', t === 'ladder');
+  if (t === 'ladder') renderLadder();
+}
+
+// ---------- actions ----------
+const actionsEl = document.getElementById('actions-inner');
+const activeActions = new Map(); // id -> element
+function addAction(def) {
+  if (activeActions.has(def.id)) return;
+  const btn = document.createElement('button');
+  btn.className = 'act' + (def.subtle ? ' subtle' : '');
+  btn.innerHTML = '<span class="cd"></span><span class="label">' + def.label + '</span>';
+  btn.onclick = () => {
+    if (btn.disabled) return;
+    def.onClick(btn);
+    if (def.cooldown) cooldown(btn, def.cooldown);
+    tick();
+  };
+  actionsEl.appendChild(btn);
+  activeActions.set(def.id, btn);
+  return btn;
+}
+function removeAction(id) {
+  const el = activeActions.get(id);
+  if (el) { el.remove(); activeActions.delete(id); }
+}
+function cooldown(btn, ms) {
+  btn.disabled = true;
+  const bar = btn.querySelector('.cd');
+  bar.style.transition = 'none';
+  bar.style.width = '100%';
+  requestAnimationFrame(() => {
+    bar.style.transition = 'width ' + ms + 'ms linear';
+    bar.style.width = '0%';
+  });
+  setTimeout(() => { btn.disabled = false; }, ms);
+}
+
+// ---------- forks ----------
+const forkEl = document.getElementById('fork');
+function openFork(fork) {
+  document.getElementById('fork-title').textContent = fork.title;
+  document.getElementById('fork-body').innerHTML = fork.body.map(p => '<p>' + v(p) + '</p>').join('');
+  const opts = document.getElementById('fork-opts');
+  opts.innerHTML = '';
+  fork.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.className = 'fork-opt' + (opt.clean ? ' clean' : '');
+    b.innerHTML = v(opt.label) + (opt.sub ? '<span class="sub">' + v(opt.sub) + '</span>' : '');
+    b.onclick = () => {
+      forkEl.classList.remove('open');
+      S.forkHistory.push({ id: fork.id, choice: opt.id, t: Date.now() });
+      if (!opt.clean) S.dirty++;
+      applyRegister();
+      opt.effect();
+      save();
+      tick();
+    };
+    opts.appendChild(b);
+  });
+  forkEl.classList.add('open');
+}
+
+// ---------- energy regen ----------
+setInterval(() => {
+  if (S.energy < S.energyMax) { S.energy = Math.min(S.energyMax, S.energy + 1); renderHud(); save(); }
+}, 9000);
+
+// ---------- scheduler ----------
+function tick() {
+  renderHud();
+  TRIGGERS.forEach(tr => {
+    if (!S.flags[tr.id] && tr.when()) {
+      S.flags[tr.id] = true;
+      tr.fire();
+    }
+  });
+  save();
+}
+
+/* ================================================================
+   LADDER — dots are people
+   ================================================================ */
+const LADDER = [
+  { name: '&nbsp;', lvl: '', fog: true },
+  { name: '&nbsp;&nbsp;&nbsp;', lvl: '', fog: true },
+  { name: 'Ray Bennett', lvl: 'L7', fog: false, key: 'ray' },
+  { name: 'M. Okafor', lvl: 'L6', fog: false },
+  { name: 'C. Lind', lvl: 'L6', fog: false },
+  { name: 'S. Aiyar', lvl: 'L5', fog: false },
+  { name: 'Nora Voss', lvl: 'L4', fog: false, key: 'nora' },
+  { name: 'Jess Chen', lvl: 'L4', fog: false, key: 'jess' },
+  { name: 'you', lvl: 'L3', you: true },
+];
+function renderLadder() {
+  const wrap = document.getElementById('rungs');
+  wrap.innerHTML = '';
+  LADDER.forEach(r => {
+    const div = document.createElement('div');
+    div.className = 'rung' + (r.fog ? ' fog' : '') + (r.you ? ' you' : '')
+      + (r.key && S.flags['dim_' + r.key] ? ' dimmed' : '');
+    div.innerHTML = '<span class="dot"></span><span class="name">' + r.name + '</span><span class="lvl">' + r.lvl + '</span>';
+    wrap.appendChild(div);
+  });
+}
+
+/* ================================================================
+   CONTENT — Act I vertical slice
+   All narrative lives below this line. Register variants use {1:,2:,3:}.
+   ================================================================ */
+
+// ----- actions -----
+const ACT_FIND_DESK = {
+  id: 'findDesk', label: 'find your desk',
+  onClick() {
+    removeAction('findDesk');
+    S.act = 1;
+    S.flags.hudVisible = true;
+    seq([
+      [400,  () => line('rows of desks under fluorescent hum. one has your name on a sticky note. spelled right, first try. that\u2019s new.')],
+      [2200, () => line('the laptop is already provisioned. the wallpaper is a mountain nobody here has climbed.')],
+      [2400, () => { addAction(ACT_WORK); line('<em>there is work in the queue.</em>'); }],
+    ]);
+  }
+};
+
+const WORK_FLAVOR = [
+  { at: 1,  t: 'a small bug. you fix it. somewhere, a dashboard turns green.' },
+  { at: 3,  t: 'you learn the codebase the way you learn a city: wrong turns first.' },
+  { at: 5,  t: { 1: 'a shoutout in the team channel. six clap emojis. it feels absurdly good.',
+                 2: 'a shoutout in the team channel. you screenshot it for the promo file.' } },
+  { at: 7,  t: 'the org newsletter runs the team photo. you can find yourself immediately.' },
+  { at: 8,  t: 'the work is real. that\u2019s the honest part.' },
+  { at: 10, t: 'a director you haven\u2019t met asks if you\u2019re taking the notes. you were presenting.' },
+  { at: 12, t: { 1: 'you ship before lunch and spend lunch talking about anything else. Nora does an impression of the build server.',
+                 2: 'you ship before lunch and eat at your desk.' } },
+];
+const ACT_WORK = {
+  id: 'work', label: 'work', cooldown: 2500,
+  onClick() {
+    if (S.energy <= 0) { line('<em>you are running on nothing. it can wait until morning. (energy refills over time.)</em>'); return; }
+    S.energy--;
+    S.workClicks++;
+    S.impact += 1 + Math.floor(S.workClicks / 10);
+    const f = WORK_FLAVOR.find(x => x.at === S.workClicks);
+    if (f) line(f.t);
+  }
+};
+
+const ACT_STEP_OUTSIDE = {
+  id: 'stepOutside', label: 'step outside', subtle: true,
+  onClick() {
+    S.cocoon++;
+    const lines = [
+      'the air is cold. someone is laughing somewhere below.',
+      'the roof deck is empty. the city gets on fine without you.',
+      'you stand there a while. nothing accrues.',
+      'ten minutes go by. nobody notices. that turns out to be fine.',
+      'under the far bench, something small and pale, wrapped tight. odd.',
+    ];
+    line(lines[Math.min(S.cocoon - 1, lines.length - 1)]);
+  }
+};
+
+// ----- forks -----
+const FORK_1 = {
+  id: 'fork1',
+  title: 'the roadmap review',
+  body: [
+    'the quarterly review is going well. too well to interrupt.',
+    { 1: 'the VP is nodding at the caching proposal on the screen. Jess sketched it on a whiteboard two weeks ago while you took notes. the deck has your name in the footer. she is on the far side of the room, and she has noticed.',
+      2: 'the VP is nodding at the caching proposal. Jess\u2019s proposal, technically. your name is in the footer. she is watching you from across the room.' },
+    '\u201cthis is exactly the kind of thinking we need,\u201d the VP says, to you.',
+  ],
+  options: [
+    {
+      id: 'quiet', clean: false,
+      label: 'say thank you',
+      sub: 'the moment passes. moments do.',
+      effect() {
+        S.impact += 15;
+        S.flags.visibility = true;
+        seq([
+          [500,  () => scene('you say thank you.')],
+          [2000, () => line({ 1: 'Jess looks at her laptop. after the meeting she is very polite to you, which is worse.',
+                              2: 'Jess looks at her laptop. she is polite about it afterward. people usually are.' })],
+          [2600, () => line('<em>the VP knows your name now.</em>')],
+        ]);
+      }
+    },
+    {
+      id: 'correct', clean: true,
+      label: 'credit Jess, in the room, out loud',
+      sub: 'the momentum is hers now. that was the point.',
+      effect() {
+        S.flags.creditedJess = true;
+        seq([
+          [500,  () => scene('\u201cactually, this one\u2019s Jess\u2019s. i just built on it.\u201d')],
+          [2000, () => line('a short silence. the VP\u2019s nod moves across the room to her.')],
+          [2600, () => line('later she leaves a coffee on your desk without a note.')],
+          [3000, () => line('<em>the meeting moves on.</em>')],
+        ]);
+      }
+    },
+  ]
+};
+
+const FORK_2_TEASER = () => {
+  seq([
+    [0,    () => scene('friday, 2:14 a.m. the payments service goes down for four hours.')],
+    [2800, () => line('by monday there has to be a postmortem. writing down what happened is not the same as deciding what happened. except here, it is.')],
+    [3000, () => line('<em>end of the current build. act II begins with the postmortem. your choices are saved.</em>')],
+  ]);
+};
+
+// ----- character beats -----
+function meetRay() {
+  seq([
+    [0,    () => line('someone stops at your desk. \u201cyou\u2019re the one who fixed the queue thing without being asked. i checked the blame.\u201d Ray Bennett. L7. he seems to actually mean it.')],
+    [2600, () => line('\u201clunch is at noon. come find us.\u201d')],
+  ]);
+}
+function meetNora() {
+  seq([
+    [0,    () => line('the desk beside yours belongs to Nora Voss, who is ranking the conference rooms on a whiteboard for no reason anyone asked.')],
+    [2600, () => line('\u201cyou\u2019re new. two things: the fourth floor snacks are better, and nothing here is an actual emergency. they\u2019ll tell you it is. it isn\u2019t.\u201d')],
+  ]);
+}
+function perfCycle() {
+  seq([
+    [0,    () => scene('performance review, H1.')],
+    [2000, () => line('a calibration room you are not in decides what your year meant. Ray is in it.')],
+    [3400, () => line(S.flags.creditedJess
+      ? '\u201ci told them what you said in the roadmap review,\u201d Ray says after. \u201cthe correction. that cost you a little this cycle. for what it\u2019s worth, i count it.\u201d'
+      : '\u201cstrong year,\u201d Ray says after. \u201cthe VP mentioned the caching proposal. you\u2019ve got momentum. spend it on purpose.\u201d')],
+    [3600, () => line('<em>a new tab has appeared: the ladder.</em>')],
+    [200,  () => { S.flags.ladderUnlocked = true; renderHud(); }],
+  ]);
+}
+
+// ----- triggers (thresholds) -----
+const TRIGGERS = [
+  { id: 'trg_nora',    when: () => S.workClicks >= 4,  fire: meetNora },
+  { id: 'trg_ray',     when: () => S.workClicks >= 9,  fire: meetRay },
+  { id: 'trg_outside', when: () => S.workClicks >= 11, fire: () => addAction(ACT_STEP_OUTSIDE) },
+  { id: 'trg_fork1',   when: () => S.impact >= 20,     fire: () => setTimeout(() => openFork(FORK_1), 1200) },
+  { id: 'trg_perf',    when: () => S.impact >= 42 && S.forkHistory.some(f => f.id === 'fork1'),
+    fire: () => setTimeout(perfCycle, 1500) },
+  { id: 'trg_act2',    when: () => S.flags.ladderUnlocked && S.impact >= 60,
+    fire: () => setTimeout(FORK_2_TEASER, 1500) },
+];
+
+/* ================================================================
+   BOOT
+   ================================================================ */
+applyRegister();
+renderHud();
+
+if (S.act === 0 && S.workClicks === 0) {
+  // cold open
+  seq([
+    [600,  () => scene('your badge works. you\u2019re in.')],
+    [2200, () => addAction(ACT_FIND_DESK)],
+  ]);
+} else {
+  // resume
+  line('<em>you\u2019re back. the queue kept growing while you were gone. it always does.</em>');
+  addAction(ACT_WORK);
+  if (S.flags.trg_outside) addAction(ACT_STEP_OUTSIDE);
+  tick();
+}
+</script>
+</body>
+</html>
