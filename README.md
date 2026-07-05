@@ -7,14 +7,34 @@ browser.
 
 ## Play it
 
-Open `index.html` in any browser. That's the whole install.
+```bash
+git clone https://github.com/beautifulgownss/overtime.git
+cd overtime
+open index.html   # macOS; double-click the file on Windows/Linux
+```
+
+No build step, no dependencies. That's the whole install.
 
 If this repo is pushed to GitHub with Pages enabled (Settings → Pages →
-deploy from `main` / root), it'll be playable at:
+deploy from `main` / root), it's playable directly at:
 
 ```
-https://<your-username>.github.io/overtime/
+https://beautifulgownss.github.io/overtime/
 ```
+
+## Screenshots
+
+![The cold open](screenshots/01-cold-open.png)  
+*The cold open.*
+
+![The ladder after a promotion, Jess dimmed](screenshots/02-promotion-ladder-dimmed-jess.png)  
+*After a promotion. Jess, dimmed.*
+
+![The ladder after the layoff, clean path](screenshots/03-post-layoff-ladder-r1.png)  
+*After the layoff, clean path.*
+
+![The ladder after the layoff, cold path](screenshots/04-bonus-r3-people-blur.png)  
+*The same moment, cold path.*
 
 ## Status
 
@@ -39,7 +59,7 @@ register, and the register rewrites the game around you:
 
 ## Structure
 
-Everything lives in `index.html` on purpose — engine code and narrative
+The game itself is `index.html` and nothing else — engine code and narrative
 content are separated into clearly marked sections within the file so the
 writing can grow without touching the engine:
 
@@ -49,17 +69,20 @@ writing can grow without touching the engine:
 - **CONTENT** — all narrative: log lines, fork text, character beats,
   triggers. This is where most future work happens.
 
-## Local development
+`scripts/` and `screenshots/` are dev tooling (screenshot generation for
+this README) — neither is loaded by the game and neither is needed to play
+it.
 
-No build step. Edit `index.html`, refresh the browser. A local server is
-optional but avoids any browser quirks with `file://` paths:
+## Notes
+
+No build step, no dependencies, no server required. Edit `index.html`,
+refresh the browser. A local server is optional but avoids browser quirks
+with `file://` paths:
 
 ```bash
 python3 -m http.server 8000
 # then open http://localhost:8000
 ```
-
-## Save data
 
 Progress saves to the browser's `localStorage` automatically, including
 decisions in progress. Clearing site data resets the game.
